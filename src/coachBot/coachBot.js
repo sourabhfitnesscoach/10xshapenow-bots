@@ -7,12 +7,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const { Coach, Client } = require('../shared/models');
 const { coachMessages } = require('../shared/messages');
 
-// Tracks registration state per Telegram user
-// Format: { telegramId: { step: 'NAME'|'PHONE', data: {} } }
 const registrationSessions = {};
-
-// Tracks add-client state per coach
-// Format: { telegramId: { step: 'CLIENT_NAME'|'CLIENT_PHONE', data: {} } }
 const addClientSessions = {};
 
 function generateCoachId(count) {
@@ -28,7 +23,6 @@ async function initCoachBot(token, clientBotInstance) {
     const telegramId = String(msg.from.id);
     const chatId = msg.chat.id;
 
-    // Check if already registered
     const existingCoach = await Coach.findOne({ telegramId });
     if (existingCoach) {
       await bot.sendMessage(chatId,
@@ -40,7 +34,6 @@ async function initCoachBot(token, clientBotInstance) {
       return;
     }
 
-    // Start registration
     registrationSessions[telegramId] = { step: 'NAME', data: {} };
     await bot.sendMessage(chatId, coachMessages.welcome(), { parse_mode: 'Markdown' });
   });
@@ -118,12 +111,133 @@ async function initCoachBot(token, clientBotInstance) {
     await bot.sendMessage(chatId, detail, { parse_mode: 'Markdown' });
   });
 
-  // ─── /help ─────────────────────────────────────────────────
-  bot.onText(/\/help/, async (msg) => {
-    await bot.sendMessage(msg.chat.id, coachMessages.helpMessage(), { parse_mode: 'Markdown' });
+  // ─── /deactivateclient [phone] ─────────────────────────────
+  bot.onText(/\/deactivateclient (.+)/, async (msg, match) => {
+    const telegramId = String(msg.from.id);
+    const chatId = msg.chat.id;
+    const phone = match[1].trim();
+
+    const coach = await Coach.findOne({ telegramId });
+    if (!coach) {
+      await bot.sendMessage(chatId, '⚠️ Pehle /start se register karo!');
+      return;
+    }
+
+    const client = await Client.findOne({ coachId: coach.coachId, phone });
+    if (!client) {
+      await bot.sendMessage(chatId,
+        `❌ *Client nahi mila*\n\nPhone: *${phone}* aapke clients mein nahi hai.`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    if (client.programStatus === 'INACTIVE') {
+      await bot.sendMessage(chatId,
+        `⚠️ *${client.clientName}* pehle se hi inactive hai.`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    const prevStatus = client.programStatus;
+    client.programStatus = 'INACTIVE';
+    await client.save();
+
+    await bot.sendMessage(chatId,
+      `✅ *Client Deactivated*\n\n` +
+      `👤 Naam: *${client.clientName}*\n` +
+      `📱 Phone: *${client.phone}*\n` +
+      `📅 Day: *${client.currentDay}/30*\n\n` +
+      `Status: *${prevStatus}* → *INACTIVE*\n\n` +
+      `_Client ko ab koi message nahi jayega. Reactivate karne ke liye /reactivateclient ${phone}_`,
+      { parse_mode: 'Markdown' }
+    );
   });
 
-  // ─── GENERAL MESSAGE HANDLER (for registration + add client flows) ──
+  // ─── /reactivateclient [phone] ─────────────────────────────
+  bot.onText(/\/reactivateclient (.+)/, async (msg, match) => {
+    const telegramId = String(msg.from.id);
+    const chatId = msg.chat.id;
+    const phone = match[1].trim();
+
+    const coach = await Coach.findOne({ telegramId });
+    if (!coach) {
+      await bot.sendMessage(chatId, '⚠️ Pehle /start se register karo!');
+      return;
+    }
+
+    const client = await Client.findOne({ coachId: coach.coachId, phone });
+    if (!client) {
+      await bot.sendMessage(chatId,
+        `❌ *Client nahi mila*\n\nPhone: *${phone}* aapke clients mein nahi hai.`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    client.programStatus = 'ACTIVE';
+    await client.save();
+
+    await bot.sendMessage(chatId,
+      `✅ *Client Reactivated!*\n\n` +
+      `👤 Naam: *${client.clientName}*\n` +
+      `📱 Phone: *${client.phone}*\n` +
+      `📅 Day: *${client.currentDay}/30*\n\n` +
+      `_Kal subah se regular messages phir shuru ho jayenge._`,
+      { parse_mode: 'Markdown' }
+    );
+  });
+
+  // ─── /deleteclient [phone] ─────────────────────────────────
+  bot.onText(/\/deleteclient (.+)/, async (msg, match) => {
+    const telegramId = String(msg.from.id);
+    const chatId = msg.chat.id;
+    const phone = match[1].trim();
+
+    const coach = await Coach.findOne({ telegramId });
+    if (!coach) {
+      await bot.sendMessage(chatId, '⚠️ Pehle /start se register karo!');
+      return;
+    }
+
+    const client = await Client.findOne({ coachId: coach.coachId, phone });
+    if (!client) {
+      await bot.sendMessage(chatId,
+        `❌ *Client nahi mila*\n\nPhone: *${phone}* aapke clients mein nahi hai.`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    const clientName = client.clientName;
+    await Client.deleteOne({ _id: client._id });
+
+    await bot.sendMessage(chatId,
+      `🗑️ *Client Permanently Deleted*\n\n` +
+      `👤 Naam: *${clientName}*\n` +
+      `📱 Phone: *${phone}*\n\n` +
+      `⚠️ _Ye action undo nahi ho sakta. Client ka saara data delete ho gaya._`,
+      { parse_mode: 'Markdown' }
+    );
+  });
+
+  // ─── /help ─────────────────────────────────────────────────
+  bot.onText(/\/help/, async (msg) => {
+    await bot.sendMessage(msg.chat.id,
+      `📋 *Available Commands*\n━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `➕ /addclient — Naya client register karo\n` +
+      `📊 /myclients — Apne sabhi clients dekho\n` +
+      `🔍 /client [phone] — Kisi client ki details\n` +
+      `⏸️ /deactivateclient [phone] — Client ko pause karo\n` +
+      `▶️ /reactivateclient [phone] — Client ko resume karo\n` +
+      `🗑️ /deleteclient [phone] — Client permanently delete karo\n` +
+      `❓ /help — Ye list`,
+      { parse_mode: 'Markdown' }
+    );
+  });
+
+  // ─── GENERAL MESSAGE HANDLER ───────────────────────────────
   bot.on('message', async (msg) => {
     if (!msg.text || msg.text.startsWith('/')) return;
 
@@ -145,7 +259,6 @@ async function initCoachBot(token, clientBotInstance) {
       if (session.step === 'PHONE') {
         session.data.phone = text;
 
-        // Generate Coach ID
         const coachCount = await Coach.countDocuments();
         const coachId = generateCoachId(coachCount + 1);
 
@@ -182,7 +295,6 @@ async function initCoachBot(token, clientBotInstance) {
       if (session.step === 'CLIENT_PHONE') {
         session.data.phone = text;
 
-        // Check duplicate
         const existing = await Client.findOne({ phone: session.data.phone });
         if (existing) {
           delete addClientSessions[telegramId];
@@ -190,7 +302,6 @@ async function initCoachBot(token, clientBotInstance) {
           return;
         }
 
-        // Save client
         const newClient = new Client({
           clientName: session.data.clientName,
           phone:      session.data.phone,
@@ -207,15 +318,13 @@ async function initCoachBot(token, clientBotInstance) {
           { parse_mode: 'Markdown' }
         );
 
-        // Trigger Client Bot to send welcome (if client has telegram already — they must start the client bot first)
-        // The actual onboarding happens when client starts the client bot
         console.log(`📌 Client registered: ${session.data.clientName} under coach ${session.data.coachId}`);
         return;
       }
     }
   });
 
-  // ─── SEND MORNING REPORTS (called by cron in index.js) ─────
+  // ─── SEND MORNING REPORTS ───────────────────────────────────
   bot.sendMorningReports = async () => {
     const coaches = await Coach.find({ isActive: true });
 
@@ -240,7 +349,7 @@ async function initCoachBot(token, clientBotInstance) {
     }
   };
 
-  // ─── NOTIFY COACH of missed client (called from client bot) ─
+  // ─── NOTIFY COACH of missed client ─────────────────────────
   bot.notifyCoachMissed = async (coachTelegramId, clientName, clientPhone, consecutiveDays) => {
     try {
       await bot.sendMessage(
@@ -253,7 +362,7 @@ async function initCoachBot(token, clientBotInstance) {
     }
   };
 
-  // ─── NOTIFY COACH of Day 30 READY conversion ───────────────
+  // ─── NOTIFY COACH of Day 30 READY ──────────────────────────
   bot.notifyCoachReady = async (coachTelegramId, clientName, clientPhone) => {
     try {
       await bot.sendMessage(
