@@ -1,0 +1,20 @@
+{
+  "name": "10xshape-bots",
+  "version": "1.0.0",
+  "description": "10X Shape Coach Bot + Client Assistant Bot by Cohtrix Technologies",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.66.0",
+    "mongoose": "^8.0.0",
+    "dotenv": "^16.3.1",
+    "node-cron": "^3.0.3",
+    "axios": "^1.6.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
