@@ -11,18 +11,28 @@ async function initClientBot(token, coachBotInstance) {
   const bot = new TelegramBot(token, { polling: true });
   console.log('✅ Client Bot started');
 
-  const channelLink = process.env.CHANNEL_INVITE_LINK;
+  // ─── GENERATE ONE-TIME INVITE LINK ─────────────────────────
+  async function generateOneTimeLink() {
+    try {
+      const channelId = process.env.CHANNEL_ID;
+      // Create one-time invite link — expires after 1 use
+      const result = await bot.createChatInviteLink(channelId, {
+        member_limit: 1,
+        name: 'One-time client link'
+      });
+      return result.invite_link;
+    } catch (err) {
+      console.error('Error generating invite link:', err.message);
+      // Fallback to static link if generation fails
+      return process.env.CHANNEL_INVITE_LINK;
+    }
+  }
 
   // ─── /start ────────────────────────────────────────────────
   bot.onText(/\/start/, async (msg) => {
     const telegramId = String(msg.from.id);
     const chatId = msg.chat.id;
 
-    // Find unboarded client by checking if this Telegram user has registered phone
-    // Client must be registered by coach first, then they start the bot
-    // We match by checking existing unboarded clients
-
-    // Check if already onboarded
     const existingClient = await Client.findOne({ telegramId });
     if (existingClient) {
       await bot.sendMessage(chatId,
@@ -34,7 +44,6 @@ async function initClientBot(token, coachBotInstance) {
       return;
     }
 
-    // No telegram ID match — ask for phone number to link their account
     await bot.sendMessage(chatId,
       `🙏 *Namaste! 10X Shape Transformation Bot mein Aapka Swagat!*\n\n` +
       `Apna *registered phone number* type karein (jaise 919876543210):\n\n` +
@@ -42,8 +51,6 @@ async function initClientBot(token, coachBotInstance) {
       { parse_mode: 'Markdown' }
     );
 
-    // Mark this user as waiting for phone verification
-    // We use a simple in-memory map
     bot._pendingVerification = bot._pendingVerification || {};
     bot._pendingVerification[telegramId] = true;
   });
@@ -56,13 +63,11 @@ async function initClientBot(token, coachBotInstance) {
     const chatId = msg.chat.id;
     const text = msg.text.trim().toUpperCase();
 
-    // ── PHONE VERIFICATION ────────────────────────────────
     bot._pendingVerification = bot._pendingVerification || {};
 
+    // ── PHONE VERIFICATION ────────────────────────────────
     if (bot._pendingVerification[telegramId]) {
       const phoneInput = msg.text.trim();
-
-      // Try to find unboarded client with this phone
       const client = await Client.findOne({ phone: phoneInput, telegramId: null });
 
       if (!client) {
@@ -84,12 +89,15 @@ async function initClientBot(token, coachBotInstance) {
 
       delete bot._pendingVerification[telegramId];
 
-      // Get coach info for welcome message
+      // Get coach info
       const coach = await Coach.findOne({ coachId: client.coachId });
       const coachName = coach ? coach.fullName : 'Aapke Coach';
 
+      // Generate one-time invite link for this client only
+      const oneTimeLink = await generateOneTimeLink();
+
       await bot.sendMessage(chatId,
-        clientMessages.welcome(client.clientName, coachName, channelLink),
+        clientMessages.welcome(client.clientName, coachName, oneTimeLink),
         { parse_mode: 'Markdown' }
       );
       return;
@@ -116,12 +124,10 @@ async function initClientBot(token, coachBotInstance) {
       const dayOfProgram = client.currentDay;
 
       if (text === 'YES') {
-        // Mark day as complete
         client.lastTaskSubmitted = 'YES';
         client.lastActivityDate = today;
         client.consecutiveMisses = 0;
 
-        // Week summaries
         if (dayOfProgram === 7)  client.weekSummaries.week1 = `Week 1 complete!`;
         if (dayOfProgram === 14) client.weekSummaries.week2 = `Week 2 complete!`;
         if (dayOfProgram === 21) client.weekSummaries.week3 = `Week 3 complete!`;
@@ -136,7 +142,6 @@ async function initClientBot(token, coachBotInstance) {
         }
 
       } else {
-        // Mark day as missed
         client.lastTaskSubmitted = 'NO';
         client.consecutiveMisses += 1;
         if (!client.daysMissed.includes(dayOfProgram)) {
@@ -149,7 +154,6 @@ async function initClientBot(token, coachBotInstance) {
           { parse_mode: 'Markdown' }
         );
 
-        // 2+ consecutive misses — notify coach
         if (client.consecutiveMisses >= 2) {
           await bot.sendMessage(chatId,
             clientMessages.reEngagement(client.clientName),
@@ -169,7 +173,7 @@ async function initClientBot(token, coachBotInstance) {
       return;
     }
 
-    // ── BACK (re-engagement response) ────────────────────
+    // ── BACK ─────────────────────────────────────────────
     if (text === 'BACK') {
       const client = await Client.findOne({ telegramId });
       if (!client) return;
@@ -190,7 +194,6 @@ async function initClientBot(token, coachBotInstance) {
       const client = await Client.findOne({ telegramId });
       if (!client) return;
 
-      // Record the conversion
       client.day30Status = 'READY';
       client.day30StatusDate = new Date();
       client.programStatus = 'COMPLETED';
@@ -201,7 +204,6 @@ async function initClientBot(token, coachBotInstance) {
         { parse_mode: 'Markdown' }
       );
 
-      // Notify coach
       if (coachBotInstance && client.coachTelegramId) {
         await coachBotInstance.notifyCoachReady(
           client.coachTelegramId,
@@ -213,14 +215,13 @@ async function initClientBot(token, coachBotInstance) {
     }
   });
 
-  // ─── SEND MORNING MESSAGES (called by cron in index.js) ────
+  // ─── SEND MORNING MESSAGES ──────────────────────────────────
   bot.sendMorningMessages = async () => {
     const activeClients = await Client.find({ programStatus: 'ACTIVE' });
 
     for (const client of activeClients) {
       if (!client.telegramId) continue;
 
-      // Advance to next day
       client.currentDay += 1;
 
       if (client.currentDay > 30) {
@@ -240,7 +241,6 @@ async function initClientBot(token, coachBotInstance) {
           { parse_mode: 'Markdown' }
         );
 
-        // Send week review messages
         if ([7, 14, 21].includes(client.currentDay)) {
           const weekNum = client.currentDay / 7;
           const daysCompleted = client.currentDay - client.daysMissed.filter(d => d <= client.currentDay).length;
@@ -255,7 +255,6 @@ async function initClientBot(token, coachBotInstance) {
           }, 5000);
         }
 
-        // Day 30 final message
         if (client.currentDay === 30) {
           const coach = await Coach.findOne({ coachId: client.coachId });
           const coachWhatsapp = coach ? coach.whatsapp : 'Apne Coach se contact karo';
@@ -276,7 +275,7 @@ async function initClientBot(token, coachBotInstance) {
     }
   };
 
-  // ─── SEND EVENING CHECK-INS (called by cron in index.js) ───
+  // ─── SEND EVENING CHECK-INS ─────────────────────────────────
   bot.sendEveningCheckIns = async () => {
     const activeClients = await Client.find({ programStatus: 'ACTIVE' });
 
